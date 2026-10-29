@@ -1,0 +1,62 @@
+name: CI & Sanitized Auto-Issue (Gemma 4 + Codex Triage)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  python-ci:
+    name: Python 3.12 (Ruff, Pytest & Sanitized Auto-Issue)
+    if: "!startsWith(github.head_ref, 'fix/auto-')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Ruff, PyCompile & Pytest (capture failure log)
+        run: |
+          set -o pipefail
+          {
+            python -m pip install --upgrade pip ruff pytest
+            python -m py_compile todo_crud.py test_todo_crud.py
+            ruff check . --select E9,F63,F7,F82
+            pytest -q --tb=line --show-capture=no
+            python todo_crud.py
+          } 2>&1 | tee ci_error.log
+
+      - name: Open Sanitized GitHub Issue on Failure (Gemma 4 + Codex Triage)
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "### Log do erro no GitHub Actions (Sanitizado)"
+            echo "Pipeline de resolução local: \`resolve_ci_issue_gemma4_codex\` (\`gemma4:31b\` + \`chatgpt-codex\`)."
+            echo '~~~text'
+            tail -n 80 ci_error.log | sed -E \
+              -e 's/(ghp_|github_pat_|gho_|sk-[a-zA-Z0-9_-]+)[a-zA-Z0-9_-]+/[REDACTED_TOKEN]/g' \
+              -e 's/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[REDACTED_EMAIL]/g' \
+              -e 's/[0-9]{3}\.?[0-9]{3}\.?[0-9]{3}-?[0-9]{2}/[REDACTED_CPF]/g' \
+              -e 's/(PASSWORD|SECRET|TOKEN|API_KEY|KEY)[[:space:]]*=[[:space:]]*[^[:space:]]+/\1=[REDACTED]/Ig'
+            echo '~~~'
+          } > issue_body.md
+          gh issue create \
+            --title "🚨 [CI Falhou] Commit ${{ github.sha }}" \
+            --body-file issue_body.md
